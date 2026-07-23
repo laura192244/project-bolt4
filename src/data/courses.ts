@@ -430,6 +430,7 @@ videos:[],
     return [
       {
         id: 'sql',
+        videos: [],
         title: 'SQL Databases',
         description: 'Learn SQL language and database management. Get familiar with SELECT, INSERT, UPDATE commands.',
         pdfContent: `SQL Databases - Introduction
@@ -509,6 +510,7 @@ SQL is a powerful tool for database management. It allows efficient work with da
       },
       {
         id: 'python',
+        videos: [],
         title: 'Python Programming',
         description: 'Master Python language from basics to advanced topics.',
         pdfContent: `Python Programming - Basics
@@ -605,6 +607,7 @@ Python is suitable for beginners and widely used in both web development and dat
       },
       {
         id: 'csharp',
+        videos: [],
         title: 'C# Programming',
         description: 'Learn C# language and .NET framework to create modern applications.',
         pdfContent: `C# Programming - Basics
@@ -715,6 +718,7 @@ C# is a powerful language for creating Windows applications, games (Unity), and 
       },
       {
         id: 'html',
+        videos: [],
         title: 'HTML & Web Development',
         description: 'Create web pages using HTML and CSS. Learn web design fundamentals.',
         pdfContent: `HTML & Web Development - Basics

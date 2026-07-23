@@ -65,6 +65,7 @@ interface Translations {
 
 const translations: Record<Language, Translations> = {
   hy: {
+    language: 'hy',
     nav: {
       home: 'Գլխավոր',
       courses: 'Դասեր',
@@ -136,6 +137,7 @@ const translations: Record<Language, Translations> = {
     }
   },
   en: {
+    language: 'en',
     nav: {
       home: 'Home',
       courses: 'Courses',

@@ -1,118 +1,167 @@
-﻿import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 
-interface User {
+export interface AuthUser {
+  id: string;
   email: string;
   firstName: string;
   lastName: string;
-  birthday: string;
+  birthday: string | null;
   role: 'admin' | 'user';
 }
 
+export interface SignupData {
+  firstName: string;
+  lastName: string;
+  birthday?: string;
+  email: string;
+  password: string;
+}
+
+interface AuthResult {
+  error: string | null;
+}
+
+interface SignupResult extends AuthResult {
+  needsConfirmation: boolean;
+}
+
 interface AuthContextType {
-    user: User | null;
-    login: (email: string, password: string, role: 'admin' | 'user') => boolean;
-    signup: (userData: Omit<User, 'role'> & { password: string }) => boolean;
-    logout: () => void;
-    isAuthenticated: boolean;
-    isAdmin: boolean;
-    resetPassword: (email: string, newPassword: string) => boolean; // ⬅️ ADD THIS
+  user: AuthUser | null;
+  loading: boolean;
+  isAuthenticated: boolean;
+  isAdmin: boolean;
+  passwordRecovery: boolean;
+  login: (email: string, password: string) => Promise<AuthResult>;
+  signup: (data: SignupData) => Promise<SignupResult>;
+  logout: () => Promise<void>;
+  sendPasswordReset: (email: string) => Promise<AuthResult>;
+  updatePassword: (newPassword: string) => Promise<AuthResult>;
+  clearPasswordRecovery: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem('currentUser');
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
+    let active = true;
+
+    // Turn a Supabase session into our AuthUser by joining the profile row.
+    const applySession = async (session: Session | null) => {
+      if (!active) return;
+
+      if (!session?.user) {
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('first_name, last_name, birthday, role')
+        .eq('id', session.user.id)
+        .maybeSingle();
+
+      if (!active) return;
+
+      setUser({
+        id: session.user.id,
+        email: session.user.email ?? '',
+        firstName: profile?.first_name ?? '',
+        lastName: profile?.last_name ?? '',
+        birthday: profile?.birthday ?? null,
+        role: profile?.role === 'admin' ? 'admin' : 'user',
+      });
+      setLoading(false);
+    };
+
+    supabase.auth.getSession().then(({ data }) => applySession(data.session));
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+      // Defer: calling other supabase methods directly inside this callback
+      // can deadlock the internal auth lock.
+      setTimeout(() => applySession(session), 0);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
-  const login = (email: string, password: string, role: 'admin' | 'user'): boolean => {
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-    const foundUser = users.find((u: any) => u.email === email && u.password === password);
-
-    if (foundUser) {
-      const loggedInUser = { ...foundUser, role };
-      delete loggedInUser.password;
-      setUser(loggedInUser);
-      localStorage.setItem('currentUser', JSON.stringify(loggedInUser));
-      return true;
-    }
-
-    if (email === 'admin@iqskill.am' && password === 'admin123' && role === 'admin') {
-      const adminUser = {
-        email: 'admin@iqskill.am',
-        firstName: 'Admin',
-        lastName: 'User',
-        birthday: '1990-01-01',
-        role: 'admin' as const
-      };
-      setUser(adminUser);
-      localStorage.setItem('currentUser', JSON.stringify(adminUser));
-      return true;
-    }
-
-    return false;
+  const login = async (email: string, password: string): Promise<AuthResult> => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    return { error: error?.message ?? null };
   };
 
-  const signup = (userData: Omit<User, 'role'> & { password: string }): boolean => {
-    const users = JSON.parse(localStorage.getItem('users') || '[]');
-
-    if (users.some((u: any) => u.email === userData.email)) {
-      return false;
-    }
-
-    users.push(userData);
-    localStorage.setItem('users', JSON.stringify(users));
-
-    const newUser = { ...userData, role: 'user' as const };
-    delete (newUser as any).password;
-    setUser(newUser);
-    localStorage.setItem('currentUser', JSON.stringify(newUser));
-
-    return true;
+  const signup = async ({
+    firstName,
+    lastName,
+    birthday,
+    email,
+    password,
+  }: SignupData): Promise<SignupResult> => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        // These become the user's metadata, which the DB trigger reads to
+        // build the profiles row. Keys MUST match the trigger: first_name, last_name, birthday.
+        data: { first_name: firstName, last_name: lastName, birthday: birthday ?? '' },
+      },
+    });
+    if (error) return { error: error.message, needsConfirmation: false };
+    // If "Confirm email" is ON, there is no session yet — the user must confirm first.
+    return { error: null, needsConfirmation: !data.session };
   };
 
-  const logout = () => {
+  const logout = async () => {
+    await supabase.auth.signOut();
     setUser(null);
-    localStorage.removeItem('currentUser');
+    setPasswordRecovery(false);
   };
-    const resetPassword = (email: string, newPassword: string): boolean => {
-        const users = JSON.parse(localStorage.getItem('users') || '[]');
-        const userIndex = users.findIndex((u: any) => u.email === email);
 
-        if (userIndex === -1) return false; // user not found
+  const sendPasswordReset = async (email: string): Promise<AuthResult> => {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: window.location.origin,
+    });
+    return { error: error?.message ?? null };
+  };
 
-        users[userIndex].password = newPassword; // update password
-        localStorage.setItem('users', JSON.stringify(users));
+  const updatePassword = async (newPassword: string): Promise<AuthResult> => {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (!error) setPasswordRecovery(false);
+    return { error: error?.message ?? null };
+  };
 
-        // if currently logged in user is the same, update currentUser
-        if (user?.email === email) {
-            const updatedUser = { ...user };
-            setUser(updatedUser);
-            localStorage.setItem('currentUser', JSON.stringify(updatedUser));
-        }
+  const clearPasswordRecovery = () => setPasswordRecovery(false);
 
-        return true;
-    };
   return (
-      <AuthContext.Provider
-          value={{
-              user,
-              login,
-              signup,
-              logout,
-              isAuthenticated: !!user,
-              isAdmin: user?.role === 'admin',
-              resetPassword, // ⬅️ add here
-          }}
-      >
-          {children}
-      </AuthContext.Provider>
-
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        isAuthenticated: !!user,
+        isAdmin: user?.role === 'admin',
+        passwordRecovery,
+        login,
+        signup,
+        logout,
+        sendPasswordReset,
+        updatePassword,
+        clearPasswordRecovery,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
   );
 };
 

@@ -5,7 +5,7 @@ export interface Question {
 }
 
 export interface Course {
-  videos: any;
+  videos: string[];
   id: string;
   title: string;
   description: string;

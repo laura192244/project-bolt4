@@ -1,296 +1,194 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Edit, Trash2, Save, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Plus, Edit, Trash2, ArrowUp, ArrowDown, Settings, X, Save } from 'lucide-react';
 import { useLanguage } from '../contexts/LanguageContext';
-import { Course, Question } from '../types/course';
+import { useAuth } from '../contexts/AuthContext';
+import { CourseRow, SubcourseRow, fetchCourses, pick } from '../lib/content';
+import { createCourse, updateCourse, deleteCourse, swapPositions } from '../lib/admin';
+import { AdminCourseEditor } from '../components/admin/AdminCourseEditor';
+import { AdminSubcourseEditor } from '../components/admin/AdminSubcourseEditor';
+import { AdminQuestionEditor } from '../components/admin/AdminQuestionEditor';
+
+interface CourseForm {
+  id?: string;
+  slug: string;
+  title_hy: string;
+  title_en: string;
+  description_hy: string;
+  description_en: string;
+}
+
+const inputCls =
+  'w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-transparent';
 
 export const AdminPanel: React.FC = () => {
-  const { t } = useLanguage();
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editingCourse, setEditingCourse] = useState<Course | null>(null);
+  const { isAdmin } = useAuth();
+  const { language } = useLanguage();
+
+  const [courses, setCourses] = useState<CourseRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const [selectedCourse, setSelectedCourse] = useState<CourseRow | null>(null);
+  const [selectedSubcourse, setSelectedSubcourse] = useState<SubcourseRow | null>(null);
+  const [quizEditing, setQuizEditing] = useState<{ quizId: string; title: string } | null>(null);
+  const [form, setForm] = useState<CourseForm | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    fetchCourses()
+      .then(setCourses)
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  };
 
   useEffect(() => {
-    const storedCourses = localStorage.getItem('courses');
-    if (storedCourses) {
-      setCourses(JSON.parse(storedCourses));
-    }
+    load();
   }, []);
 
-  const saveCourses = (updatedCourses: Course[]) => {
-    setCourses(updatedCourses);
-    localStorage.setItem('courses', JSON.stringify(updatedCourses));
-  };
+  if (!isAdmin) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-slate-600">
+        {language === 'hy' ? 'Հասանելի չէ' : 'Not authorized'}
+      </div>
+    );
+  }
 
-  const handleAddCourse = () => {
-    const newCourse: Course = {
-      id: `course-${Date.now()}`,
-      title: '',
-      description: '',
-      pdfContent: '',
-      quiz: [
-        { question: '', options: ['', '', '', ''], correctAnswer: 0 }
-      ]
-    };
-    setEditingCourse(newCourse);
-    setIsEditing(true);
-  };
+  // --- Quiz question editor ---
+  if (quizEditing) {
+    return <AdminQuestionEditor quizId={quizEditing.quizId} title={quizEditing.title} onBack={() => setQuizEditing(null)} />;
+  }
 
-  const handleEditCourse = (course: Course) => {
-    setEditingCourse({ ...course });
-    setIsEditing(true);
-  };
+  // --- Lesson editor ---
+  if (selectedSubcourse && selectedCourse) {
+    return <AdminSubcourseEditor subcourse={selectedSubcourse} onBack={() => setSelectedSubcourse(null)} />;
+  }
 
-  const handleDeleteCourse = (courseId: string) => {
-    if (confirm(t.language === 'hy' ? 'Հեռացնել այս դասը?' : 'Delete this course?')) {
-      const updatedCourses = courses.filter(c => c.id !== courseId);
-      saveCourses(updatedCourses);
-    }
-  };
+  // --- Course editor (its lessons) ---
+  if (selectedCourse) {
+    return (
+      <AdminCourseEditor
+        course={selectedCourse}
+        onBack={() => { setSelectedCourse(null); load(); }}
+        onEditSubcourse={setSelectedSubcourse}
+        onEditQuiz={(quizId, title) => setQuizEditing({ quizId, title })}
+      />
+    );
+  }
 
-  const handleSaveCourse = () => {
-    if (!editingCourse) return;
-
-    if (!editingCourse.title || !editingCourse.description) {
-      alert(t.language === 'hy' ? 'Լրացրեք բոլոր դաշտերը' : 'Please fill all fields');
+  const saveCourse = async () => {
+    if (!form) return;
+    if (!form.slug || !form.title_hy || !form.title_en) {
+      setError(language === 'hy' ? 'Լրացրեք slug-ը և վերնագրերը' : 'Fill in slug and both titles');
       return;
     }
-
-    const existingIndex = courses.findIndex(c => c.id === editingCourse.id);
-
-    if (existingIndex !== -1) {
-      const updatedCourses = [...courses];
-      updatedCourses[existingIndex] = editingCourse;
-      saveCourses(updatedCourses);
-    } else {
-      saveCourses([...courses, editingCourse]);
-    }
-
-    setIsEditing(false);
-    setEditingCourse(null);
-  };
-
-  const handleCancel = () => {
-    setIsEditing(false);
-    setEditingCourse(null);
-  };
-
-  const updateCourseField = (field: keyof Course, value: string) => {
-    if (editingCourse) {
-      setEditingCourse({ ...editingCourse, [field]: value });
-    }
-  };
-
-  const addQuestion = () => {
-    if (editingCourse) {
-      setEditingCourse({
-        ...editingCourse,
-        quiz: [
-          ...editingCourse.quiz,
-          { question: '', options: ['', '', '', ''], correctAnswer: 0 }
-        ]
-      });
+    setBusy(true);
+    setError('');
+    try {
+      if (form.id) {
+        await updateCourse(form.id, {
+          slug: form.slug,
+          title_hy: form.title_hy,
+          title_en: form.title_en,
+          description_hy: form.description_hy,
+          description_en: form.description_en,
+        });
+      } else {
+        const position = courses.length ? Math.max(...courses.map((c) => c.position)) + 1 : 1;
+        await createCourse({
+          slug: form.slug,
+          title_hy: form.title_hy,
+          title_en: form.title_en,
+          description_hy: form.description_hy,
+          description_en: form.description_en,
+          position,
+        });
+      }
+      setForm(null);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setBusy(false);
     }
   };
 
-  const updateQuestion = (index: number, field: keyof Question | 'option', value: string | number, optionIndex?: number) => {
-    if (!editingCourse) return;
-
-    const updatedQuiz = [...editingCourse.quiz];
-
-    if (field === 'option' && optionIndex !== undefined) {
-      updatedQuiz[index].options[optionIndex] = value as string;
-    } else if (field === 'question') {
-      updatedQuiz[index].question = value as string;
-    } else if (field === 'correctAnswer') {
-      updatedQuiz[index].correctAnswer = value as number;
-    }
-
-    setEditingCourse({ ...editingCourse, quiz: updatedQuiz });
-  };
-
-  const removeQuestion = (index: number) => {
-    if (editingCourse && editingCourse.quiz.length > 1) {
-      setEditingCourse({
-        ...editingCourse,
-        quiz: editingCourse.quiz.filter((_, i) => i !== index)
-      });
+  const remove = async (c: CourseRow) => {
+    if (!confirm(language === 'hy' ? 'Ջնջե՞լ դասընթացը և ԱՄԲՈՂՋ բովանդակությունը։' : 'Delete this course and ALL its content?')) return;
+    setBusy(true);
+    try {
+      await deleteCourse(c.id);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to delete');
+    } finally {
+      setBusy(false);
     }
   };
 
-  if (isEditing && editingCourse) {
+  const move = async (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= courses.length) return;
+    setBusy(true);
+    try {
+      await swapPositions('courses', courses[i], courses[j]);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to reorder');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // --- Course create/edit form ---
+  if (form) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 py-12 px-4">
-        <div className="max-w-4xl mx-auto">
-          <div className="bg-white rounded-2xl shadow-xl p-8">
-            <div className="flex justify-between items-center mb-6">
+      <div className="py-12 px-4">
+        <div className="max-w-2xl mx-auto">
+          <div className="bg-white rounded-2xl shadow-xl p-8 space-y-4">
+            <div className="flex items-center justify-between">
               <h2 className="text-2xl font-bold text-slate-800">
-                {editingCourse.title ? t.adminPanel.editCourse : t.adminPanel.addCourse}
+                {form.id ? (language === 'hy' ? 'Խմբագրել դասընթացը' : 'Edit course') : (language === 'hy' ? 'Նոր դասընթաց' : 'New course')}
               </h2>
-              <button
-                onClick={handleCancel}
-                className="text-slate-600 hover:text-slate-800"
-              >
-                <X size={24} />
+              <button onClick={() => { setForm(null); setError(''); }} className="text-slate-500 hover:text-slate-800">
+                <X size={22} />
               </button>
             </div>
 
-            <div className="space-y-6">
+            {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">{error}</div>}
+
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Slug ({language === 'hy' ? 'եզակի, օր. sql' : 'unique, e.g. sql'})</label>
+              <input className={inputCls} value={form.slug} onChange={(e) => setForm({ ...form, slug: e.target.value })} />
+            </div>
+            <div className="grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  {t.adminPanel.courseName}
-                </label>
-                <input
-                  type="text"
-                  value={editingCourse.title}
-                  onChange={(e) => updateCourseField('title', e.target.value)}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-1">Վերնագիր (Armenian)</label>
+                <input className={inputCls} value={form.title_hy} onChange={(e) => setForm({ ...form, title_hy: e.target.value })} />
               </div>
-
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  {t.adminPanel.courseDescription}
-                </label>
-                <textarea
-                  value={editingCourse.description}
-                  onChange={(e) => updateCourseField('description', e.target.value)}
-                  rows={3}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+                <label className="block text-sm font-medium text-slate-700 mb-1">Title (English)</label>
+                <input className={inputCls} value={form.title_en} onChange={(e) => setForm({ ...form, title_en: e.target.value })} />
               </div>
-
+            </div>
+            <div className="grid sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  {t.language === 'hy' ? 'PDF Բովանդակություն' : 'PDF Content'}
-                            </label>
-
-                <textarea
-                  value={editingCourse.pdfContent}
-                  onChange={(e) => updateCourseField('pdfContent', e.target.value)}
-                  rows={8}
-                  className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent font-mono text-sm"
-                />
-                        </div>
-                        {/* -------------------- VIDEOS -------------------- */}
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-2">
-                                {t.language === 'hy' ? 'YouTube Տեսանյութեր' : 'YouTube Videos'}
-                            </label>
-
-                            {editingCourse.videos?.map((video, index) => (
-                                <div key={index} className="flex items-center gap-2 mb-2">
-                                    <input
-                                        type="text"
-                                        value={video}
-                                        onChange={(e) => {
-                                            const newVideos = [...editingCourse.videos];
-                                            newVideos[index] = e.target.value;
-                                            setEditingCourse({ ...editingCourse, videos: newVideos });
-                                        }}
-                                        placeholder="YouTube URL"
-                                        className="flex-1 px-3 py-2 border border-slate-300 rounded-lg"
-                                    />
-                                    <button
-                                        onClick={() => {
-                                            const newVideos = editingCourse.videos.filter((_, i) => i !== index);
-                                            setEditingCourse({ ...editingCourse, videos: newVideos });
-                                        }}
-                                        className="text-red-600 hover:text-red-800"
-                                    >
-                                        <Trash2 size={18} />
-                                    </button>
-                                </div>
-                            ))}
-
-                            <button
-                                onClick={() => {
-                                    const newVideos = editingCourse.videos ? [...editingCourse.videos, ''] : [''];
-                                    setEditingCourse({ ...editingCourse, videos: newVideos });
-                                }}
-                                className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                            >
-                                <Plus size={16} />
-                                {t.language === 'hy' ? 'Ավելացնել տեսանյութ' : 'Add Video'}
-                            </button>
-                        </div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Նկարագրություն (Armenian)</label>
+                <textarea className={inputCls} rows={3} value={form.description_hy} onChange={(e) => setForm({ ...form, description_hy: e.target.value })} />
+              </div>
               <div>
-                <div className="flex justify-between items-center mb-4">
-                  <label className="block text-sm font-medium text-slate-700">
-                    {t.language === 'hy' ? 'Թեստի հարցեր' : 'Quiz Questions'}
-                  </label>
-                  <button
-                    onClick={addQuestion}
-                    className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                  >
-                    <Plus size={16} />
-                    {t.language === 'hy' ? 'Ավելացնել հարց' : 'Add Question'}
-                  </button>
-                </div>
-
-                <div className="space-y-6">
-                  {editingCourse.quiz.map((question, qIndex) => (
-                    <div key={qIndex} className="border border-slate-300 rounded-lg p-4">
-                      <div className="flex justify-between items-start mb-3">
-                        <h4 className="font-semibold text-slate-800">
-                          {t.language === 'hy' ? 'Հարց' : 'Question'} {qIndex + 1}
-                        </h4>
-                        {editingCourse.quiz.length > 1 && (
-                          <button
-                            onClick={() => removeQuestion(qIndex)}
-                            className="text-red-600 hover:text-red-800"
-                          >
-                            <Trash2 size={18} />
-                          </button>
-                        )}
-                      </div>
-
-                      <input
-                        type="text"
-                        value={question.question}
-                        onChange={(e) => updateQuestion(qIndex, 'question', e.target.value)}
-                        placeholder={t.language === 'hy' ? 'Հարցի տեքստ' : 'Question text'}
-                        className="w-full px-3 py-2 border border-slate-300 rounded-lg mb-3"
-                      />
-
-                      <div className="space-y-2">
-                        {question.options.map((option, oIndex) => (
-                          <div key={oIndex} className="flex items-center gap-2">
-                            <input
-                              type="radio"
-                              name={`correct-${qIndex}`}
-                              checked={question.correctAnswer === oIndex}
-                              onChange={() => updateQuestion(qIndex, 'correctAnswer', oIndex)}
-                            />
-                            <input
-                              type="text"
-                              value={option}
-                              onChange={(e) => updateQuestion(qIndex, 'option', e.target.value, oIndex)}
-                              placeholder={`${t.language === 'hy' ? 'Տարբերակ' : 'Option'} ${oIndex + 1}`}
-                              className="flex-1 px-3 py-2 border border-slate-300 rounded-lg"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Description (English)</label>
+                <textarea className={inputCls} rows={3} value={form.description_en} onChange={(e) => setForm({ ...form, description_en: e.target.value })} />
               </div>
+            </div>
 
-              <div className="flex gap-3 pt-4">
-                <button
-                  onClick={handleSaveCourse}
-                  className="flex-1 flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white py-3 rounded-lg font-semibold hover:from-blue-700 hover:to-cyan-700 transition-all"
-                >
-                  <Save size={20} />
-                  {t.adminPanel.save}
-                </button>
-                <button
-                  onClick={handleCancel}
-                  className="flex-1 bg-slate-200 text-slate-800 py-3 rounded-lg font-semibold hover:bg-slate-300 transition-colors"
-                >
-                  {t.adminPanel.cancel}
-                </button>
-              </div>
+            <div className="flex gap-3 pt-2">
+              <button onClick={saveCourse} disabled={busy} className="inline-flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white px-6 py-3 rounded-lg font-semibold disabled:opacity-60 transition-colors">
+                <Save size={18} /> {busy ? (language === 'hy' ? 'Պահպանվում է...' : 'Saving...') : (language === 'hy' ? 'Պահպանել' : 'Save')}
+              </button>
+              <button onClick={() => { setForm(null); setError(''); }} className="bg-slate-200 hover:bg-slate-300 text-slate-800 px-6 py-3 rounded-lg font-semibold transition-colors">
+                {language === 'hy' ? 'Չեղարկել' : 'Cancel'}
+              </button>
             </div>
           </div>
         </div>
@@ -298,53 +196,66 @@ export const AdminPanel: React.FC = () => {
     );
   }
 
+  // --- Course list ---
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 py-12 px-4">
-      <div className="max-w-6xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <h1 className="text-4xl font-bold text-slate-800">{t.adminPanel.title}</h1>
+    <div className="py-12 px-4">
+      <div className="max-w-5xl mx-auto">
+        <div className="flex items-center justify-between mb-8">
+          <h1 className="text-4xl font-bold text-slate-800">{language === 'hy' ? 'Ադմին պանել' : 'Admin panel'}</h1>
           <button
-            onClick={handleAddCourse}
-            className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-cyan-600 text-white px-6 py-3 rounded-lg font-semibold hover:from-blue-700 hover:to-cyan-700 transition-all shadow-lg"
+            onClick={() => { setForm({ slug: '', title_hy: '', title_en: '', description_hy: '', description_en: '' }); setError(''); }}
+            className="inline-flex items-center gap-2 bg-gradient-to-r from-brand-600 to-brand-500 text-white px-5 py-3 rounded-lg font-semibold shadow-lg hover:from-brand-700 hover:to-brand-600 transition-all"
           >
-            <Plus size={20} />
-            {t.adminPanel.addCourse}
+            <Plus size={20} /> {language === 'hy' ? 'Նոր դասընթաց' : 'New course'}
           </button>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6">
-          {courses.map((course) => (
-            <div key={course.id} className="bg-white rounded-2xl shadow-lg p-6">
-              <h3 className="text-xl font-bold text-slate-800 mb-2">{course.title}</h3>
-              <p className="text-slate-600 mb-4 line-clamp-2">{course.description}</p>
+        {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-4">{error}</div>}
+        {loading && <p className="text-center text-slate-500">{language === 'hy' ? 'Բեռնվում է...' : 'Loading...'}</p>}
 
-              <div className="flex gap-3">
+        <div className="space-y-3">
+          {courses.map((c, i) => (
+            <div key={c.id} className="bg-white rounded-2xl shadow p-5 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex flex-col">
+                  <button onClick={() => move(i, -1)} disabled={i === 0 || busy} className="text-slate-400 hover:text-slate-700 disabled:opacity-30">
+                    <ArrowUp size={16} />
+                  </button>
+                  <button onClick={() => move(i, 1)} disabled={i === courses.length - 1 || busy} className="text-slate-400 hover:text-slate-700 disabled:opacity-30">
+                    <ArrowDown size={16} />
+                  </button>
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800">{pick(language, c.title_hy, c.title_en)}</h3>
+                  <p className="text-slate-500 text-sm">/{c.slug}</p>
+                </div>
+              </div>
+              <div className="flex gap-2 flex-shrink-0">
                 <button
-                  onClick={() => handleEditCourse(course)}
-                  className="flex-1 flex items-center justify-center gap-2 bg-blue-100 text-blue-700 py-2 rounded-lg hover:bg-blue-200 transition-colors"
+                  onClick={() => setSelectedCourse(c)}
+                  className="inline-flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
                 >
-                  <Edit size={18} />
-                  {t.adminPanel.editCourse}
+                  <Settings size={16} /> {language === 'hy' ? 'Դասեր' : 'Lessons'}
                 </button>
                 <button
-                  onClick={() => handleDeleteCourse(course.id)}
-                  className="flex-1 flex items-center justify-center gap-2 bg-red-100 text-red-700 py-2 rounded-lg hover:bg-red-200 transition-colors"
+                  onClick={() => setForm({ id: c.id, slug: c.slug, title_hy: c.title_hy, title_en: c.title_en, description_hy: c.description_hy ?? '', description_en: c.description_en ?? '' })}
+                  className="inline-flex items-center gap-1 bg-brand-50 hover:bg-brand-100 text-brand-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
                 >
-                  <Trash2 size={18} />
-                  {t.adminPanel.deleteCourse}
+                  <Edit size={16} /> {language === 'hy' ? 'Խմբագրել' : 'Edit'}
+                </button>
+                <button
+                  onClick={() => remove(c)}
+                  className="inline-flex items-center gap-1 bg-red-100 hover:bg-red-200 text-red-700 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                >
+                  <Trash2 size={16} />
                 </button>
               </div>
             </div>
           ))}
+          {!loading && courses.length === 0 && (
+            <p className="text-slate-500">{language === 'hy' ? 'Դասընթացներ չկան։' : 'No courses yet.'}</p>
+          )}
         </div>
-
-        {courses.length === 0 && (
-          <div className="text-center py-16">
-            <p className="text-slate-600 text-lg">
-              {t.language === 'hy' ? 'Դասեր չկան։ Ավելացրեք ձեր առաջին դասը։' : 'No courses yet. Add your first course.'}
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );
